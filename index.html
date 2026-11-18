@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' data:; style-src 'unsafe-inline' data:; frame-src 'self' about:; img-src 'self' data: blob:; media-src data:; font-src data:; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' data:; style-src 'unsafe-inline' data:; frame-src 'self' about: https://www.youtube-nocookie.com https://player.vimeo.com; img-src 'self' data: blob:; media-src data: blob: https:; font-src data:; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>Pré-visualizador Moodle</title>
 <meta name="description" content="Abra backups do Moodle em .mbz ou .zip e confira tópicos, atividades e jogos SCORM no navegador, sem login.">
 <meta property="og:title" content="Pré-visualizador Moodle">
@@ -42,8 +42,9 @@
   .brand{display:flex;align-items:center;gap:.75rem;font-family:var(--heading);font-weight:700}
   .brand span{display:grid;place-items:center;width:2.1rem;height:2.1rem;flex:none;background:var(--tint);color:var(--accent-dark);border-radius:8px;font-size:.85rem}
   .actions{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center}
-  #status{margin:0;padding:.7rem clamp(1rem,4vw,3.3rem);background:var(--tint);color:var(--accent-dark);border-bottom:1px solid var(--line)}
-  #status[data-error]{background:#fff2e8;color:#792d15}
+  #status,#exportStatus{margin:0;padding:.7rem clamp(1rem,4vw,3.3rem);background:var(--tint);color:var(--accent-dark);border-bottom:1px solid var(--line)}
+  #status[data-error],#exportStatus[data-error]{background:#fff2e8;color:#792d15}
+  #exportActions{display:flex;align-items:center;flex-wrap:wrap;gap:.6rem}
   .welcome{max-width:820px;margin:clamp(2rem,8vw,5rem) auto;padding:0 1rem}
   .upload{--inset:clamp(1.25rem,5vw,3rem);padding:0 var(--inset) var(--inset);background:var(--paper);border:1px solid var(--line);border-radius:14px;box-shadow:0 14px 36px #163e5c14}
   .upload.dragging{outline:3px dashed var(--accent);outline-offset:4px;background:var(--tint)}
@@ -88,6 +89,10 @@
   .notice{padding:.7rem .9rem;border-left:3px solid var(--accent);border-radius:3px;background:var(--tint);color:var(--accent-dark)}
   iframe {display:block;width:100%;border:0;background:#fff}
   iframe.game{height:650px;border:1px solid var(--line);border-radius:8px}
+  .embedded-media{max-width:780px;margin:.85rem 0 1rem}
+  .embedded-media iframe,.embedded-media video{display:block;width:100%;border:0;aspect-ratio:16/9;border-radius:8px;background:#102030}
+  .embedded-media audio{display:block;width:100%}
+  .embedded-media a{display:inline-block;margin-top:.35rem;font-size:.88rem;color:var(--accent-dark)}
   .subcard{padding:.85rem 1rem;border:1px solid var(--line);border-radius:8px}
   .subcard>*+*{margin-top:.45rem}
   .subcard fieldset{padding:.35rem .65rem .6rem;border:1px solid var(--line);border-radius:6px}
@@ -115,9 +120,19 @@
   <div class="actions" id="topActions" hidden>
     <button type="button" data-open="backup">Abrir outro arquivo</button>
     <button type="button" data-open="draft">Abrir rascunho</button>
+    <div id="exportActions" hidden>
+      <select id="exportFormat" aria-label="Formato de exportação">
+        <option value="pdf">PDF</option>
+        <option value="docx">DOCX</option>
+        <option value="epub">EPUB</option>
+        <option value="zip">Site do curso em ZIP</option>
+      </select>
+      <button type="button" id="exportCourse" class="primary">Exportar</button>
+    </div>
   </div>
 </header>
 <p id="status" role="status" hidden></p>
+<p id="exportStatus" role="status" hidden></p>
 <input type="file" id="backup" accept=".mbz,.zip,.gz,.tar" hidden>
 <input type="file" id="draft" webkitdirectory multiple hidden>
 <main>
@@ -796,6 +811,8 @@ let course=null, selected="", loadGeneration=0, detailGeneration=0;
 let loadController=null;
 let activePlayer=null;
 const frameSources=new Map();
+const previewMediaURLs=new Set();
+const previewMediaFiles=new Set();
 const openGroups=new Set();
 const utf8Data=(text,mime)=>"data:"+mime+";charset=utf-8,"+encodeURIComponent(text);
 const toData=blob=>new Promise((resolve,reject)=>{
@@ -890,18 +907,6 @@ async function readLegacyCourse(archive,name) {
     return {path,archivePath,filename:path.split("/").at(-1),area:"",item:"",mime:""};
   });
   const normalized=document.implementation.createDocument(null,null);
-  function copyNode(node) {
-    const copy=normalized.createElement(node.localName.toLowerCase());
-    for(const child of node.childNodes) {
-      if(child.nodeType===Node.ELEMENT_NODE) copy.append(copyNode(child));
-      else if(child.nodeType===Node.TEXT_NODE || child.nodeType===Node.CDATA_SECTION_NODE) {
-        copy.append(normalized.createTextNode(child.nodeValue));
-      }
-    }
-    const id=direct(node,"ID");
-    if(id) copy.setAttribute("id",id);
-    return copy;
-  }
   const models=new Map([...source.querySelectorAll("MODULES > MOD")].map(node=>
     [direct(node,"MODTYPE")+":"+direct(node,"ID"),node]));
   const activities=new Map();
@@ -915,7 +920,7 @@ async function readLegacyCourse(archive,name) {
       const kind=direct(ref,"TYPE"), instance=direct(ref,"INSTANCE"), itemId=direct(ref,"ID");
       if(!kind || !itemId) continue;
       const original=models.get(kind+":"+instance);
-      const model=original ? copyNode(original) : null;
+      const model=original ? legacyNode(original,normalized) : null;
       const type=kind==="assignment" ? "assign" : kind;
       const title=plain(direct(model,"name")) || typeName(type);
       const item={id:itemId,type,title,section:id,model,hidden:direct(ref,"VISIBLE")==="0"};
@@ -925,8 +930,23 @@ async function readLegacyCourse(archive,name) {
     return {id,number,title:heading && heading.length<=80 ? heading : sectionName(null,number),summary,format:"1",
       hidden:direct(section,"VISIBLE")==="0",items};
   });
+  const byId=new Map([...source.querySelectorAll("QUESTION_CATEGORIES QUESTIONS > QUESTION")]
+    .filter(node=>direct(node,"QTYPE")).map(node=>[direct(node,"ID"),{question:legacyNode(node,normalized),version:0,context:""}]));
   return {archive,name,sectors,activities,records:new Map(),context:"",legacyId,legacyFiles,
-    title:direct(header,"FULLNAME") || name,summary:direct(header,"SUMMARY"),format:"1",bank:null};
+    bank:{byId,byEntry:new Map()},
+    title:direct(header,"FULLNAME") || name,summary:direct(header,"SUMMARY"),format:"1"};
+}
+function legacyNode(node,normalized) {
+  const copy=normalized.createElement(node.localName.toLowerCase());
+  for(const child of node.childNodes) {
+    if(child.nodeType===Node.ELEMENT_NODE) copy.append(legacyNode(child,normalized));
+    else if(child.nodeType===Node.TEXT_NODE || child.nodeType===Node.CDATA_SECTION_NODE) {
+      copy.append(normalized.createTextNode(child.nodeValue));
+    }
+  }
+  const id=direct(node,"ID");
+  if(id) copy.setAttribute("id",id);
+  return copy;
 }
 function beginLoad(message) {
   loadController?.abort();
@@ -957,6 +977,7 @@ async function presentInput(input,id) {
   ++detailGeneration;
   activePlayer=null;
   frameSources.clear();
+  clearPreviewMedia();
   course=next;
   selected="";
   openGroups.clear();
@@ -965,6 +986,8 @@ async function presentInput(input,id) {
   $("workspace").hidden=false;
   $("workspace").toggleAttribute("data-package",!course);
   $("topActions").hidden=false;
+  $("exportActions").hidden=!course;
+  $("exportStatus").hidden=true;
   status("");
   if(course) {
     $("courseTitle").textContent=course.title;
@@ -1048,11 +1071,119 @@ function external(url) {
     return ["http:","https:"].includes(target.protocol) ? target.href : "";
   } catch { return ""; }
 }
+function embedSpec(reference) {
+  const link=external(reference);
+  if(!link) return null;
+  const url=new URL(link);
+  const host=url.hostname.toLowerCase().replace(/^(www\.|m\.)/,"");
+  if(["youtube.com","youtube-nocookie.com","youtu.be"].includes(host)) {
+    const path=host==="youtu.be" ? url.pathname.slice(1) :
+      /^\/(?:v|shorts|live|embed)\/([\w-]{11})(?:[\/&]|$)/.exec(url.pathname)?.[1];
+    const id=path || url.searchParams.get("v") || "";
+    if(/^[\w-]{11}$/.test(id)) return {kind:"iframe",src:"https://www.youtube-nocookie.com/embed/"+id,
+      href:"https://www.youtube.com/watch?v="+id,title:"Vídeo do YouTube"};
+    const playlist=url.searchParams.get("list") || "";
+    if(/^[\w-]{10,80}$/.test(playlist)) return {kind:"iframe",
+      src:"https://www.youtube-nocookie.com/embed/videoseries?list="+playlist,
+      href:"https://www.youtube.com/playlist?list="+playlist,title:"Playlist do YouTube"};
+  }
+  if(["vimeo.com","player.vimeo.com"].includes(host)) {
+    const id=/(?:^|\/)(\d{6,14})(?:\/|$)/.exec(url.pathname)?.[1];
+    if(id) return {kind:"iframe",src:"https://player.vimeo.com/video/"+id+"?dnt=1",
+      href:"https://vimeo.com/"+id,title:"Vídeo do Vimeo"};
+  }
+  const mime=fileMime(url.pathname);
+  if(/^(video|audio)\//.test(mime)) {
+    url.protocol="https:";
+    return {kind:mime.split("/")[0],src:url.href,href:link,title:mime.startsWith("video/")?"Vídeo":"Áudio"};
+  }
+  return null;
+}
+function mediaReferences(root) {
+  const refs=[];
+  for(const tag of root.querySelectorAll("a[href],iframe[src],embed[src],object[data],param[value],audio[src],video[src],source[src]")) {
+    const name=tag.localName;
+    if(name==="param" && !/^(movie|src)$/i.test(tag.getAttribute("name") || "")) continue;
+    const reference=tag.getAttribute("href") || tag.getAttribute("src") || tag.getAttribute("data") || tag.getAttribute("value");
+    if(reference) refs.push({reference,tag,name});
+  }
+  return refs;
+}
+function embeddedPlayer(spec) {
+  const wrapper=element("div",null,"embedded-media");
+  const player=element(spec.kind);
+  player.setAttribute("src",spec.src);
+  if(spec.kind==="iframe") {
+    player.title=spec.title;
+    player.loading="lazy";
+    player.referrerPolicy="strict-origin-when-cross-origin";
+    player.setAttribute("allow","encrypted-media; fullscreen; picture-in-picture");
+    player.setAttribute("allowfullscreen","");
+  } else {
+    player.setAttribute("controls","");
+    player.setAttribute("preload","none");
+    player.setAttribute("aria-label",spec.title);
+  }
+  wrapper.append(player);
+  if(spec.href) {
+    const link=element("a","Abrir na origem");
+    link.href=spec.href;
+    link.target="_blank";
+    link.rel="noopener noreferrer";
+    wrapper.append(link);
+  }
+  return wrapper;
+}
+function clearPreviewMedia() {
+  for(const url of previewMediaURLs) URL.revokeObjectURL(url);
+  previewMediaURLs.clear();
+  previewMediaFiles.clear();
+}
+const mediaFileKey=file=>file.hash || file.archivePath;
+function linkedFile(current,reference,files,area="",item="") {
+  const ref=/^@@PLUGINFILE@@\/(.*)$/i.exec(reference);
+  const path=ref ? decodedPath(ref[1].split(/[?#]/,1)[0]) :
+    current.legacyFiles ? legacyFilePath(reference,current.legacyId) : "";
+  if(!path) return null;
+  const candidates=files.filter(file=>file.path===path);
+  return candidates.find(file=>(!area || file.area===area) && (!item || file.item===item)) || candidates[0] || null;
+}
+async function showLinkedMedia(parent,references,files,current,area="",item="") {
+  const seen=new Set();
+  const players=[];
+  for(const {reference,name} of references) {
+    const file=linkedFile(current,reference,files,area,item);
+    const mime=file && fileMime(file.filename,file.mime);
+    if(file && /^(audio|video)\//.test(mime) && !["source","video","audio"].includes(name)) {
+      const key=mediaFileKey(file);
+      if(seen.has(key)) continue;
+      seen.add(key);
+      players.push(archivePlayer(parent,current,file));
+    } else if(!file) {
+      const spec=embedSpec(reference);
+      if(!spec || seen.has(spec.src)) continue;
+      seen.add(spec.src);
+      players.push(Promise.resolve(embeddedPlayer(spec)));
+    }
+  }
+  for(const player of await Promise.all(players)) if(player && parent.isConnected) parent.append(player);
+}
+async function archivePlayer(parent,current,file) {
+  if(!parent.isConnected) return null;
+  const mime=fileMime(file.filename,file.mime);
+  const data=await poolFile(current.archive,file).catch(()=>null);
+  if(!data || !parent.isConnected) return null;
+  const src=URL.createObjectURL(new Blob([data],{type:mime}));
+  previewMediaURLs.add(src);
+  previewMediaFiles.add(mediaFileKey(file));
+  return embeddedPlayer({kind:mime.split("/")[0],src,title:file.filename});
+}
 function fileMime(filename,fallback="") {
   const ext=filename.split(".").at(-1).toLowerCase();
   return {jpg:"image/jpeg",jpeg:"image/jpeg",png:"image/png",gif:"image/gif",svg:"image/svg+xml",webp:"image/webp",
     css:"text/css",js:"text/javascript",mjs:"text/javascript",html:"text/html",htm:"text/html",mp3:"audio/mpeg",
-    mp4:"video/mp4",webm:"video/webm",ogg:"audio/ogg",wav:"audio/wav",woff:"font/woff",woff2:"font/woff2",
+    mp4:"video/mp4",m4v:"video/mp4",webm:"video/webm",ogv:"video/ogg",mov:"video/quicktime",
+    ogg:"audio/ogg",wav:"audio/wav",m4a:"audio/mp4",aac:"audio/aac",woff:"font/woff",woff2:"font/woff2",
     pdf:"application/pdf"}[ext] || fallback || "application/octet-stream";
 }
 async function poolFile(archive,file,limit=Infinity) {
@@ -1061,6 +1192,7 @@ async function poolFile(archive,file,limit=Infinity) {
 async function safeFragment(html,files=[],area="",item="") {
   const draft=document.createElement("template");
   draft.innerHTML=html;
+  const linked=mediaReferences(draft.content);
   draft.content.querySelectorAll("script,iframe,frame,object,embed,form,meta,link,base,svg foreignObject").forEach(n=>n.remove());
   const allowMedia=/^(image|audio|video)\//;
   const pending=[];
@@ -1100,13 +1232,14 @@ async function safeFragment(html,files=[],area="",item="") {
     }
   }
   await Promise.all(pending);
-  return draft.innerHTML;
+  return {html:draft.innerHTML,linked};
 }
 const staticBridge=`const send=()=>parent.postMessage({viewer:"moodle-preview",height:document.documentElement.scrollHeight},"*"); new ResizeObserver(send).observe(document.body); window.addEventListener("load",send); send();`;
 async function rich(parent,markup,format="1",files=[],area="",item="") {
-  if(!String(markup || "").trim()) return;
+  if(!parent.isConnected || !course || !String(markup || "").trim()) return;
   if(["2","4"].includes(format)) { parent.append(element("p",markup,"text")); return; }
-  const html=await safeFragment(markup,files,area,item);
+  const current=course;
+  const {html,linked}=await safeFragment(markup,files,area,item);
   if(!parent.isConnected) return;
   const frame=element("iframe");
   frame.title="Conteúdo da atividade";
@@ -1123,6 +1256,7 @@ async function rich(parent,markup,format="1",files=[],area="",item="") {
     '<body><div>'+html+'</div><scr'+'ipt nonce="'+nonce+'">'+staticBridge+'</scr'+'ipt></body></html>';
   parent.append(frame);
   frameSources.set(frame.contentWindow,frame);
+  await showLinkedMedia(parent,linked,files,current,area,item);
 }
 window.addEventListener("message",event=>{
   const data=event.data;
@@ -1139,7 +1273,7 @@ window.addEventListener("message",event=>{
       (activePlayer.maximum?" / "+activePlayer.maximum:"") : state ? "Estado do teste: "+state : "Teste local em andamento.";
   }
 });
-function showFiles(panel,files) {
+async function showFiles(panel,files) {
   if(!files.length) return;
   const archive=course.archive;
   panel.append(element("h3","Arquivos do item"));
@@ -1159,15 +1293,29 @@ function showFiles(panel,files) {
     }));
   }
   panel.append(list);
+  const current=course;
+  const players=files.filter(file=>/^(audio|video)\//.test(fileMime(file.filename,file.mime)) &&
+    !previewMediaFiles.has(mediaFileKey(file)));
+  const embedded=await Promise.all(players.map(file=>archivePlayer(panel,current,file)));
+  for(const player of embedded) if(player && panel.isConnected) panel.append(player);
 }
-function legacyAttachments(data,files,courseId) {
+function legacyAttachments(data,files,courseId,includeUserData=true) {
   const paths=new Set([legacyFilePath(direct(data,"reference"),courseId)]);
   const draft=document.createElement("template");
   for(const field of data.querySelectorAll("content,description,intro,summary,alltext,contents,message")) {
+    if(!includeUserData && field.closest("discussions,posts,submissions,attempts,responses,grades,users")) continue;
     draft.innerHTML=field.textContent;
     for(const link of draft.content.querySelectorAll("a[href]")) paths.add(legacyFilePath(link.getAttribute("href"),courseId));
   }
   return files.filter(file=>paths.has(file.path));
+}
+async function readActivity(current,activity) {
+  if(current.legacyFiles) return {data:activity.model,files:current.legacyFiles,hidden:activity.hidden};
+  const [body,module]=await Promise.all([current.archive.xml(activity.dir+"/"+activity.type+".xml"),current.archive.xml(activity.dir+"/module.xml")]);
+  const root=body?.documentElement;
+  const data=root && ([...root.children].find(child=>child.localName===activity.type) || root);
+  return {data,files:current.records.get(root?.getAttribute("contextid")) || [],
+    hidden:direct(module?.documentElement,"visible")==="0"};
 }
 async function show(id) {
   if(!course) return;
@@ -1176,6 +1324,7 @@ async function show(id) {
   selected=id;
   activePlayer=null;
   frameSources.clear();
+  clearPreviewMedia();
   const section=course.sectors.find(s=>s.id===id.slice(8) && id.startsWith("section:"));
   if(section) openGroups.add(section.id);
   else if(course.activities.has(id)) openGroups.add(course.activities.get(id).section);
@@ -1214,15 +1363,8 @@ async function show(id) {
       const activity=current.activities.get(id);
       if(!activity) return;
       const panel=makePanel(activity.title,typeName(activity.type));
-      let data=activity.model, files=current.legacyFiles, hidden=activity.hidden;
-      if(!current.legacyFiles) {
-        const [body,module]=await Promise.all([current.archive.xml(activity.dir+"/"+activity.type+".xml"),current.archive.xml(activity.dir+"/module.xml")]);
-        if(generation!==detailGeneration) return;
-        hidden=direct(module?.documentElement,"visible")==="0";
-        const root=body?.documentElement;
-        data=root && ([...root.children].find(child=>child.localName===activity.type) || root);
-        files=current.records.get(root?.getAttribute("contextid")) || [];
-      }
+      const {data,files,hidden}=await readActivity(current,activity);
+      if(generation!==detailGeneration) return;
       if(hidden) note(panel,"Atividade oculta no backup.");
       if(!data) { note(panel,"O backup registra este item, mas o arquivo da atividade não está incluído."); return; }
       const intro=direct(data,"intro") || direct(data,"description") || (current.legacyFiles
@@ -1233,7 +1375,7 @@ async function show(id) {
       if(generation!==detailGeneration) return;
       const attachments=current.legacyFiles ? legacyAttachments(data,files,current.legacyId) :
         files.filter(file=>activity.type!=="scorm" || file.area==="package");
-      showFiles(panel,attachments);
+      await showFiles(panel,attachments);
     }
   } catch(error) {
     if(generation===detailGeneration) note($("detail").querySelector(".panel"),error.message || "O conteúdo deste item não pôde ser aberto.");
@@ -1260,6 +1402,7 @@ async function previewActivity(panel,activity,data,files,current) {
       link.target="_blank";
       link.rel="noopener noreferrer";
       panel.append(link, element("p",url,"meta"));
+      await showLinkedMedia(panel,[{reference:url,name:"a"}],files,current);
       break;
     }
     case "resource": {
@@ -1272,6 +1415,7 @@ async function previewActivity(panel,activity,data,files,current) {
         link.target="_blank";
         link.rel="noopener noreferrer";
         panel.append(link);
+        await showLinkedMedia(panel,[{reference:url,name:"a"}],files,current);
       } else if(!files.length) note(panel,"O backup não inclui arquivos para este item.");
       break;
     }
@@ -1373,32 +1517,53 @@ async function questionBank(current) {
   current.bank={byId,byEntry};
   return current.bank;
 }
-async function previewQuiz(panel,data,current) {
-  numberLine(panel,"Nota máxima",direct(data,"grade"));
-  const slots=[...data.querySelectorAll("question_instances > question_instance, slots > slot")];
-  if(!slots.length) { note(panel,"O backup não inclui questões neste questionário."); return; }
-  slots.sort((a,b)=>Number(direct(a,"slot"))-Number(direct(b,"slot")));
+async function quizRows(data,current) {
+  const slots=[...data.querySelectorAll("question_instances > question_instance, slots > slot, questions > question")];
   const bank=await questionBank(current);
-  if(!panel.isConnected) return;
-  panel.append(element("h3","Questões"));
-  for(const [index,slot] of slots.entries()) {
-    const card=element("section",null,"subcard");
-    const order=direct(slot,"slot") || String(index+1);
-    card.append(element("h3","Questão "+order));
-    panel.append(card);
+  if(current.legacyFiles) {
+    const order=direct(data,"questions").split(/[\s,]+/).filter(id=>/^\d+$/.test(id) && id!=="0");
+    const stored=slots.map(slot=>direct(slot,"question") || direct(slot,"questionid") || recordId(slot)).filter(Boolean);
+    return (order.length ? order : stored).map((id,index)=>({order:String(index+1),row:bank.byId.get(id)}));
+  }
+  slots.sort((a,b)=>Number(direct(a,"slot"))-Number(direct(b,"slot")));
+  return slots.map((slot,index)=>{
     const reference=slot.querySelector("question_reference");
     const entries=bank.byEntry.get(direct(reference,"questionbankentryid")) || [];
     const version=Number(direct(reference,"version"));
-    const pointer=direct(slot,"questionid") || direct(slot,"question");
-    const row=(version?entries.find(item=>item.version===version):entries[0]) || bank.byId.get(pointer);
+    const pointer=direct(slot,"questionid") || direct(slot,"question") || recordId(slot);
+    const row=(version ? entries.find(item=>item.version===version) : entries[0]) || bank.byId.get(pointer) ||
+      (direct(slot,"questiontext") ? {question:slot,context:""} : null);
+    return {order:direct(slot,"slot") || String(index+1),row,random:!!slot.querySelector("question_set_reference")};
+  });
+}
+function questionMarkup(question,current) {
+  const text=direct(question,"questiontext");
+  const image=current.legacyFiles && direct(question,"image");
+  if(!image) return text;
+  const node=element("img");
+  node.setAttribute("src",image);
+  node.setAttribute("alt",direct(question,"name") || "Ilustração da questão");
+  return text+node.outerHTML;
+}
+async function previewQuiz(panel,data,current) {
+  numberLine(panel,"Nota máxima",direct(data,"grade"));
+  const questions=await quizRows(data,current);
+  if(!panel.isConnected) return;
+  if(!questions.length) { note(panel,"O backup não inclui questões neste questionário."); return; }
+  panel.append(element("h3","Questões"));
+  for(const {order,row,random} of questions) {
+    if(!panel.isConnected) return;
+    const card=element("section",null,"subcard");
+    card.append(element("h3","Questão "+order));
+    panel.append(card);
     if(!row) {
-      note(card,slot.querySelector("question_set_reference") ? "Questão sorteada pelo Moodle a partir do banco." :
+      note(card,random ? "Questão sorteada pelo Moodle a partir do banco." :
         "O enunciado desta questão não foi encontrado no backup.");
       continue;
     }
     const q=row.question, type=direct(q,"qtype");
-    const files=current.records.get(row.context) || [];
-    await rich(card,direct(q,"questiontext"),direct(q,"questiontextformat"),files,"questiontext",recordId(q));
+    const files=current.legacyFiles || current.records.get(row.context) || [];
+    await rich(card,questionMarkup(q,current),direct(q,"questiontextformat"),files,"questiontext",recordId(q));
     if(type==="description") continue;
     const answers=[...q.querySelectorAll("answers > answer, question_answers > question_answer")];
     if(["multichoice","truefalse"].includes(type) && answers.length) {
@@ -1411,6 +1576,15 @@ async function previewQuiz(panel,data,current) {
         const input=element("input");
         input.type=multi?"checkbox":"radio"; input.name="quiz-slot-"+order;
         const answerText=direct(answer,"answertext") || direct(answer,"answer_text") || direct(answer,"answer");
+        if(/<(?:img|audio|video|a\s|object|iframe)\b/i.test(answerText)) {
+          const display=element("div");
+          display.style.flex="1";
+          input.setAttribute("aria-label",plain(answerText) || "Alternativa "+(field.querySelectorAll("input").length+1));
+          label.append(input,display);
+          field.append(label);
+          await rich(display,answerText,direct(answer,"answerformat"),files,"answer",recordId(answer));
+          continue;
+        }
         label.append(input,document.createTextNode(" "+plain(answerText)));
         field.append(label);
       }
@@ -1558,13 +1732,11 @@ function manifestLaunches(manifest) {
   }
   return launches.length ? launches : resources.map(node=>({path:node.getAttribute("href")}));
 }
-function configurePlayer(panel,data,files,current) {
-  const scos=[...data.querySelectorAll("scoes > sco")].filter(sco=>direct(sco,"launch"));
+function scormAssets(data,files,current) {
   const stock=new Map(files.filter(file=>file.area==="content").map(file=>[file.path,file]));
   const pkg=files.find(file=>file.area==="package" && file.filename===direct(data,"reference")) ||
     files.find(file=>file.area==="package");
-  numberLine(panel,"Nota máxima",direct(data,"maxgrade"));
-  if(!stock.size && !pkg) { note(panel,"O conteúdo SCORM não está incluído no backup."); return; }
+  if(!stock.size && !pkg) return null;
   let zipped;
   async function asset(path) {
     if(stock.has(path)) return poolFile(current.archive,stock.get(path),48*1024*1024);
@@ -1576,6 +1748,13 @@ function configurePlayer(panel,data,files,current) {
     }
     return zipped.blob(path,48*1024*1024);
   }
+  return asset;
+}
+function configurePlayer(panel,data,files,current) {
+  const scos=[...data.querySelectorAll("scoes > sco")].filter(sco=>direct(sco,"launch"));
+  const asset=scormAssets(data,files,current);
+  numberLine(panel,"Nota máxima",direct(data,"maxgrade"));
+  if(!asset) { note(panel,"O conteúdo SCORM não está incluído no backup."); return; }
   const launches=scos.map(sco=>({path:direct(sco,"launch"),title:direct(sco,"title")}));
   const initial=direct(scos.find(sco=>recordId(sco)===direct(data,"launch")),"launch");
   mountPlayer(panel,asset,launches,direct(data,"maxgrade"),initial);
@@ -1648,5 +1827,6 @@ drop.addEventListener("drop",event=>{
   openSelection(event.dataTransfer.files,false);
 });
 </script>
+<script src="./assets/exportador.js"></script>
 </body>
 </html>
