@@ -43,9 +43,19 @@
   #nav{padding:.5rem .55rem 1rem}
   details.group{padding:.3rem 0;border-bottom:1px solid var(--line)}
   summary{cursor:pointer;font-weight:650;padding:.45rem .35rem;overflow-wrap:anywhere}
-  .navitem{display:grid;grid-template-columns:2.4rem 1fr;align-items:start;gap:.55rem;width:100%;text-align:left;padding:.45rem;border:1px solid transparent;line-height:1.36;font-size:.9rem;overflow-wrap:anywhere}
-  .navitem[aria-current=true]{background:var(--tint);border-color:var(--stroke);color:var(--accent-dark)}
-  .abbr{font-size:.65rem;line-height:1.4;background:var(--tint);border-radius:4px;color:var(--accent-dark);text-align:center;align-self:start;padding:.2rem .1rem;font-weight:700}
+  .navitem,.course-item{display:grid;grid-template-columns:var(--icon-size) minmax(0,1fr);align-items:center;gap:.7rem;width:100%;text-align:left;border:0;line-height:1.4;overflow-wrap:anywhere}
+  .navitem{--icon-size:1.2rem;padding:.45rem;font-size:.9rem}
+  .navitem[aria-current=true]{background:var(--tint);color:var(--accent-dark)}
+  .course-list{list-style:none;padding:0;margin:0}
+  .course-list li+li{border-top:1px solid var(--line)}
+  .course-item{--icon-size:1.6rem;min-height:56px;padding:.8rem .45rem;border-radius:0}
+  .course-item:hover{background:var(--base);color:var(--accent-dark)}
+  .course-item:focus-visible{outline-offset:-2px}
+  .item-icon{width:var(--icon-size);height:var(--icon-size);color:#007f94}
+  .item-icon[data-kind=forum],.item-icon[data-kind=chat]{color:#7950cc}
+  .item-icon[data-kind=attendance],.item-icon[data-kind=workshop]{color:#a8349a}
+  .item-icon[data-kind=assign],.item-icon[data-kind=quiz]{color:#ad4b36}
+  .item-icon[data-kind=lesson],.item-icon[data-kind=scorm],.item-icon[data-kind=h5pactivity]{color:#395ab0}
   .courseheading{padding:0 .2rem 1.15rem}
   .courseheading h1{font-size:clamp(1.45rem,4vw,2.35rem)}
   .meta{margin:.65rem 0 0;color:var(--muted);font-size:.9rem}
@@ -68,9 +78,9 @@
   .filelist{display:flex;flex-wrap:wrap;gap:.5rem}
   .filelist button{overflow-wrap:anywhere;text-align:left}
   .text{white-space:pre-wrap}
-  .credits{background:var(--paper);border-top:1px solid var(--line);color:var(--muted);font-size:.88rem}
-  .credits-inner{max-width:1570px;margin:auto;padding:1.2rem clamp(1rem,3vw,2.6rem);overflow-wrap:anywhere}
-  .credits p+p{margin-top:.42rem}
+  .credits{background:var(--paper);border-top:1px solid var(--line);color:var(--muted);text-align:center;font-size:.75rem;line-height:1.65}
+  .credits-inner{max-width:62rem;margin:auto;padding:.9rem clamp(1rem,3vw,2rem);overflow-wrap:anywhere}
+  .credits p+p{margin-top:.3rem}
   .credits a{color:var(--accent-dark);font-weight:700;text-underline-offset:.18em}
   @media(max-width:760px){
     header.top{align-items:flex-start;flex-direction:column}
@@ -317,15 +327,51 @@ const LIMIT = 768 * 1024 * 1024;
 const MAX_ENTRIES = 100000;
 const MAX_XML = 64 * 1024 * 1024;
 const TYPES = {
-  assign:["Tarefa","TRF"], attendance:["Presença","PRE"], book:["Livro","LIV"], chat:["Chat","CHT"],
-  choice:["Escolha","ESC"], data:["Base de dados","BDD"], feedback:["Pesquisa","PES"], folder:["Pasta","PST"],
-  forum:["Fórum","FOR"], glossary:["Glossário","GLO"], h5pactivity:["H5P","H5P"], imscp:["Pacote IMS","IMS"],
-  label:["Área de texto e mídia","TXT"], lesson:["Lição","LIÇ"], lti:["Ferramenta externa","LTI"],
-  page:["Página","PÁG"], quiz:["Questionário","QUI"], resource:["Arquivo","ARQ"], scorm:["Pacote SCORM","SCO"],
-  subsection:["Subseção","SUB"], survey:["Pesquisa de avaliação","AVA"], url:["URL","URL"], wiki:["Wiki","WIK"],
-  workshop:["Laboratório de avaliação","LAB"]
+  assign:"Tarefa",attendance:"Presença",book:"Livro",chat:"Chat",choice:"Escolha",data:"Base de dados",
+  feedback:"Pesquisa",folder:"Pasta",forum:"Fórum",glossary:"Glossário",h5pactivity:"H5P",imscp:"Pacote IMS",
+  label:"Área de texto e mídia",lesson:"Lição",lti:"Ferramenta externa",page:"Página",quiz:"Questionário",
+  resource:"Arquivo",scorm:"Pacote SCORM",subsection:"Subseção",survey:"Pesquisa de avaliação",url:"URL",
+  wiki:"Wiki",workshop:"Laboratório de avaliação"
 };
-const typeName = kind => TYPES[kind]?.[0] || kind;
+const typeName = kind => Object.hasOwn(TYPES,kind) ? TYPES[kind] : kind;
+const ICONS = {
+  overview:"M3 5h7v6H3z M14 5h7v6h-7z M3 15h7v4H3z M14 15h7v4h-7z",
+  subsection:"M4 6h16 M4 12h16 M4 18h16",
+  forum:"M5 3h14a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3H8l-5 4V6a3 3 0 0 1 2-3Z M7 7h11 M7 10.5h11 M7 14h8",
+  page:"M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Z M15 2v5h5 M8 11h8 M8 15h8 M8 18h8",
+  resource:"M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Z M15 2v5h5 M12 10v8 M9 15l3 3 3-3",
+  folder:"M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z M3 8h18",
+  url:"M10 14a4 4 0 0 0 6 0l4-4a4 4 0 0 0-6-6l-2 2 M14 10a4 4 0 0 0-6 0l-4 4a4 4 0 0 0 6 6l2-2",
+  attendance:"M9 8a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z M4 17H2v-2a4 4 0 0 1 4-4h2 M17 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z M11 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2Z M7 19v-2a4 4 0 0 1 3-4",
+  assign:"M12 21H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9l5 5v3 M15 2v5h5 M8 8h4 M8 12h3 M14 20l1-4 5-5 3 3-5 5-4 1Z",
+  quiz:"M8 3h8v4H8z M8 5H5v17h14V5h-3 M9.5 11a2.5 2.5 0 1 1 3.3 2.4V15 M12.8 18h.01",
+  choice:"M4 5h16v14H4z M8 9l2 2 4-4 M8 15h8",
+  book:"M12 6C9 3 5 3 2 4v15c4-1 7-1 10 2 3-3 6-3 10-2V4c-3-1-7-1-10 2v15 M5 8c2 0 3 .2 4 1 M15 9c1-.8 2-1 4-1",
+  lesson:"M5 3h6v5H5z M13 16h6v5h-6z M8 8v5h8v3 M8 13v6h2 M15 3h4v5h-4z",
+  scorm:"M4 4h16v16H4z M10 8l6 4-6 4Z",
+  label:"M4 5h16 M12 5v14 M9 19h6 M5 5v3 M19 5v3",
+  data:"M4 6a8 3 0 1 0 16 0 8 3 0 1 0-16 0v12a8 3 0 1 0 16 0V6 M4 12a8 3 0 1 0 16 0"
+};
+const ICON_ALIASES={chat:"forum",feedback:"choice",glossary:"book",h5pactivity:"scorm",imscp:"scorm",
+  lti:"url",survey:"choice",wiki:"page",workshop:"attendance"};
+function itemIcon(kind) {
+  const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");
+  const shape=document.createElementNS(svg.namespaceURI,"path");
+  svg.setAttribute("viewBox","0 0 24 24");
+  svg.setAttribute("class","item-icon");
+  svg.setAttribute("data-kind",kind);
+  svg.setAttribute("aria-hidden","true");
+  svg.setAttribute("focusable","false");
+  shape.setAttribute("d",ICONS[Object.hasOwn(ICON_ALIASES,kind) ? ICON_ALIASES[kind] :
+    Object.hasOwn(ICONS,kind) ? kind : "resource"]);
+  shape.setAttribute("fill","none");
+  shape.setAttribute("stroke","currentColor");
+  shape.setAttribute("stroke-width","1.5");
+  shape.setAttribute("stroke-linecap","round");
+  shape.setAttribute("stroke-linejoin","round");
+  svg.append(shape);
+  return svg;
+}
 const clean = value => value === "$@NULL@$" ? "" : String(value || "");
 const value = (node, selector) => clean(node?.querySelector(selector)?.textContent);
 const direct = (node, name) => value(node, ":scope > " + name);
@@ -340,6 +386,11 @@ function button(text,action,classes) {
   result.type="button";
   result.addEventListener("click",action);
   return result;
+}
+function iconButton(text,kind,action,classes) {
+  const control=button(null,action,classes);
+  control.append(itemIcon(kind),element("span",text));
+  return control;
 }
 function status(text,error=false) {
   $("status").hidden=!text;
@@ -743,10 +794,7 @@ function renderNav() {
   const nav=$("nav");
   const query=fold($("search").value.trim());
   nav.replaceChildren();
-  const overview=button("Visão geral",()=>show("overview"),"navitem");
-  overview.prepend(element("span","INI","abbr"));
-  overview.setAttribute("aria-current",String(selected==="overview"));
-  if(!query) nav.append(overview);
+  if(!query) nav.append(navButton("Visão geral","overview","overview"));
   let matches=0;
   for(const section of course.sectors) {
     const sectionMatch=fold(section.title).includes(query);
@@ -761,19 +809,19 @@ function renderNav() {
       if(group.open) openGroups.add(section.id); else openGroups.delete(section.id);
     });
     group.append(element("summary",section.title+(section.hidden?" (oculto)":"")));
-    const openSection=button("Ver tópico",()=>show("section:"+section.id),"navitem");
-    openSection.prepend(element("span","TÓP","abbr"));
-    openSection.setAttribute("aria-current",String(selected==="section:"+section.id));
-    group.append(openSection);
+    group.append(navButton("Ver tópico","subsection","section:"+section.id));
     for(const item of items) {
-      const openItem=button(item.title,()=>show(item.id),"navitem");
-      openItem.prepend(element("span",TYPES[item.type]?.[1] || "MOD","abbr"));
-      openItem.setAttribute("aria-current",String(selected===item.id));
-      group.append(openItem);
+      group.append(navButton(item.title,item.type,item.id));
     }
     nav.append(group);
   }
   if(query && !matches) nav.append(element("p","Nenhum item encontrado.","meta"));
+}
+function navButton(title,kind,id) {
+  const control=iconButton(title,kind,()=>show(id),"navitem");
+  control.dataset.target=id;
+  if(selected===id) control.setAttribute("aria-current","true");
+  return control;
 }
 function makePanel(title,badge) {
   const article=element("article",null,"article");
@@ -921,21 +969,35 @@ async function show(id) {
   const section=course.sectors.find(s=>s.id===id.slice(8) && id.startsWith("section:"));
   if(section) openGroups.add(section.id);
   else if(course.activities.has(id)) openGroups.add(course.activities.get(id).section);
-  for(const entry of $("nav").querySelectorAll("[aria-current]")) entry.setAttribute("aria-current","false");
-  const oldFocus=document.activeElement;
-  if(oldFocus?.classList.contains("navitem")) oldFocus.setAttribute("aria-current","true");
+  for(const entry of $("nav").querySelectorAll("[data-target]")) {
+    const active=entry.dataset.target===id;
+    if(active) {
+      entry.setAttribute("aria-current","true");
+      const group=entry.closest("details");
+      if(group) group.open=true;
+    } else entry.removeAttribute("aria-current");
+  }
   try {
     if(id==="overview" || section) {
       const panel=makePanel(section?.title || "Visão geral","Curso");
       await rich(panel,section ? section.summary : current.summary, section ? section.format : current.format,
         current.legacyFiles || current.records.get(current.context) || [],"summary",section?.id || "");
       if(generation!==detailGeneration) return;
-      const list=element("div",null,"filelist");
+      const list=element("ul",null,"course-list");
       const entries=section ? section.items : current.sectors;
-      for(const entry of entries) list.append(button(entry.title,()=>{
-        show(section?entry.id:"section:"+entry.id);
-        window.scrollTo({top:0,behavior:"instant"});
-      }));
+      for(const entry of entries) {
+        const row=element("li");
+        row.append(iconButton(entry.title,section ? entry.type : "subsection",()=>{
+          show(section?entry.id:"section:"+entry.id);
+          const heading=$("detail").querySelector("h2");
+          if(heading) {
+            heading.tabIndex=-1;
+            heading.focus({preventScroll:true});
+          }
+          window.scrollTo({top:0,behavior:"instant"});
+        },"course-item"));
+        list.append(row);
+      }
       if(entries.length) panel.append(element("h3",section?"Atividades":"Tópicos"),list);
       else note(panel,"Nenhuma atividade neste tópico.");
     } else {
