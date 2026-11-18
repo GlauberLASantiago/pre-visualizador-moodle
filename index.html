@@ -35,6 +35,8 @@
   .upload p{margin:1rem 0 1.45rem;max-width:49ch;color:var(--muted)}
   .welcome .hint{margin:1rem .25rem;color:var(--muted);font-size:.92rem}
   #workspace{display:grid;grid-template-columns:minmax(230px,300px) minmax(0,1fr);gap:1.25rem;padding:1.35rem clamp(1rem,3vw,2.6rem) 2rem;max-width:1570px;margin:auto;align-items:start}
+  #workspace[data-package]{grid-template-columns:minmax(0,1fr);max-width:1120px}
+  #workspace[data-package] aside{display:none}
   aside{position:sticky;top:1rem;min-width:0;max-height:calc(100vh - 2rem);overflow:auto;background:var(--paper);border:1px solid var(--line);border-radius:12px}
   .navhead{padding:1rem;border-bottom:1px solid var(--line);background:var(--base);position:sticky;top:0;z-index:1}
   #search{width:100%;border:1px solid var(--stroke);border-radius:8px;padding:.5rem .65rem;margin-top:.65rem;min-height:40px;background:var(--paper)}
@@ -80,7 +82,7 @@
 <header class="top">
   <div class="brand"><span aria-hidden="true">M</span> Pré-visualizador Moodle</div>
   <div class="actions" id="topActions" hidden>
-    <button type="button" data-open="backup">Abrir outro backup</button>
+    <button type="button" data-open="backup">Abrir outro arquivo</button>
     <button type="button" data-open="draft">Abrir rascunho</button>
   </div>
 </header>
@@ -91,13 +93,13 @@
   <section class="welcome" id="welcome" aria-label="Abrir curso">
     <div class="upload" id="dropzone">
       <h1>Abra um curso do Moodle</h1>
-      <p>Escolha um backup ou a pasta de rascunho do curso para conferir os tópicos e abrir as atividades.</p>
+      <p>Escolha um backup do Moodle, uma pasta de rascunho ou um pacote SCORM para revisar o conteúdo.</p>
       <div class="actions">
-        <button class="primary" type="button" data-open="backup">Abrir backup .mbz</button>
+        <button class="primary" type="button" data-open="backup">Abrir .mbz ou .zip</button>
         <button type="button" data-open="draft">Abrir pasta de rascunho</button>
       </div>
     </div>
-    <p class="hint">Você também pode arrastar um arquivo .mbz para esta área. A leitura do backup acontece neste navegador.</p>
+    <p class="hint">Você também pode arrastar um arquivo .mbz ou .zip para esta área. A leitura acontece neste navegador.</p>
   </section>
   <div id="workspace" hidden>
     <aside aria-label="Índice do curso">
@@ -492,18 +494,37 @@ class Archive {
     return xml;
   }
 }
-function courseArchive(entries) {
-  if(entries.has("moodle_backup.xml")) return new Archive(entries);
-  const candidates=[...entries.keys()].filter(name=>name.endsWith("/moodle_backup.xml"));
-  if(candidates.length===1) return new Archive(entries,candidates[0].slice(0,-"moodle_backup.xml".length));
-  throw Error("Selecione um .mbz ou a pasta que contém moodle_backup.xml.");
+function archiveWith(entries,filename) {
+  if(entries.has(filename)) return new Archive(entries);
+  const paths=[...entries.keys()].filter(name=>name.endsWith("/"+filename) && !name.startsWith("__MACOSX/"));
+  if(paths.length===1) return new Archive(entries,paths[0].slice(0,-filename.length));
+  if(paths.length>1) throw Error("O arquivo contém várias pastas com "+filename+". Abra uma delas por vez.");
+  return null;
 }
-async function openArchive(file) {
+async function openArchive(file,name=file.name,depth=0) {
+  if(depth>2) throw Error("Há várias camadas de compactação. Extraia o .mbz ou o pacote SCORM e abra-o diretamente.");
   if(file.size>LIMIT) throw Error("O arquivo excede o limite de 768 MiB desta prévia.");
   const first=new Uint8Array(await file.slice(0,4).arrayBuffer());
-  const entries=first[0]===31 && first[1]===139 ? await tarIndex(await inflated(file,"gzip"))
-    : first[0]===80 && first[1]===75 ? await zipIndex(file) : await tarIndex(file);
-  return courseArchive(entries);
+  const zip=first[0]===80 && first[1]===75;
+  const entries=zip ? await zipIndex(file) : first[0]===31 && first[1]===139
+    ? await tarIndex(await inflated(file,"gzip")) : await tarIndex(file);
+  const course=archiveWith(entries,"moodle_backup.xml");
+  if(course) return {kind:"course",archive:course,name};
+  const legacy=archiveWith(entries,"moodle.xml");
+  if(legacy) return {kind:"legacy",archive:legacy,name};
+  if(zip) {
+    const packageArchive=archiveWith(entries,"imsmanifest.xml");
+    if(packageArchive) return {kind:"scorm",archive:packageArchive,name};
+    const outer=new Archive(entries);
+    const backups=outer.names().filter(path=>/\.(?:mbz|tgz|tar\.gz)$/i.test(path) &&
+      !path.startsWith("__MACOSX/") && !path.split("/").at(-1).startsWith("._"));
+    if(backups.length===1) {
+      return openArchive(await outer.blob(backups[0]),backups[0].split("/").at(-1),depth+1);
+    }
+    if(backups.length>1) return {kind:"bundle",archive:outer,name,backups,depth};
+    throw Error("Este ZIP não contém um backup Moodle (.mbz, moodle_backup.xml ou moodle.xml) nem um manifesto SCORM (imsmanifest.xml).");
+  }
+  throw Error("O arquivo não contém moodle_backup.xml. No Moodle, exporte o curso pela opção Backup.");
 }
 function draftArchive(files) {
   const entries=new Map();
@@ -512,7 +533,12 @@ function draftArchive(files) {
     const path=safePath(file.webkitRelativePath);
     if(path) entries.set(path,file);
   }
-  return courseArchive(entries);
+  const archive=archiveWith(entries,"moodle_backup.xml");
+  const name=files[0].webkitRelativePath.split("/")[0];
+  if(archive) return {kind:"course",archive,name};
+  const legacy=archiveWith(entries,"moodle.xml");
+  if(legacy) return {kind:"legacy",archive:legacy,name};
+  throw Error("Selecione a pasta do rascunho que contém moodle_backup.xml ou moodle.xml.");
 }
 
 let course=null, selected="", loadGeneration=0, detailGeneration=0;
@@ -591,33 +617,129 @@ async function readCourse(archive,name) {
     title:direct(courseNode,"fullname") || value(backup,"information > original_course_fullname") || name,
     summary:direct(courseNode,"summary"),format:direct(courseNode,"summaryformat"),bank:null};
 }
+function legacyFilePath(reference,courseId) {
+  const decoded=decodedPath(reference);
+  const token=/^\$@FILEPHP@\$(.*)$/i.exec(decoded);
+  if(token) return safePath(token[1].replaceAll("$@SLASH@$","/").replace(/^\/+/, ""));
+  const moodleFile=/(?:^|\/)file\.php(?:\/|\?file=)(\d+)\/(.*?)(?:[?#]|$)/i.exec(decoded);
+  if(moodleFile) return moodleFile[1]===courseId ? safePath(moodleFile[2]) : "";
+  if(/^[a-z][a-z\d+.-]*:/i.test(decoded) || decoded.startsWith("//")) return "";
+  return safePath(decoded.replace(/^\/+/, ""));
+}
+async function readLegacyCourse(archive,name) {
+  const xml=await archive.xml("moodle.xml",true);
+  const source=xml.querySelector("MOODLE_BACKUP > COURSE");
+  const header=source?.querySelector(":scope > HEADER");
+  if(!header) throw Error("moodle.xml não contém um curso Moodle 1.x.");
+  const legacyId=direct(header,"ID");
+  const legacyFiles=archive.names().filter(path=>path.startsWith("course_files/") &&
+    !/^course_files\/(?:email|moddata)\//i.test(path)).map(archivePath=>{
+    const path=archivePath.slice("course_files/".length);
+    return {path,archivePath,filename:path.split("/").at(-1),area:"",item:"",mime:""};
+  });
+  const normalized=document.implementation.createDocument(null,null);
+  function copyNode(node) {
+    const copy=normalized.createElement(node.localName.toLowerCase());
+    for(const child of node.childNodes) {
+      if(child.nodeType===Node.ELEMENT_NODE) copy.append(copyNode(child));
+      else if(child.nodeType===Node.TEXT_NODE || child.nodeType===Node.CDATA_SECTION_NODE) {
+        copy.append(normalized.createTextNode(child.nodeValue));
+      }
+    }
+    const id=direct(node,"ID");
+    if(id) copy.setAttribute("id",id);
+    return copy;
+  }
+  const models=new Map([...source.querySelectorAll("MODULES > MOD")].map(node=>
+    [direct(node,"MODTYPE")+":"+direct(node,"ID"),node]));
+  const activities=new Map();
+  const sectors=[...source.querySelectorAll("SECTIONS > SECTION")].map((section,index)=>{
+    const id=direct(section,"ID") || String(index);
+    const number=Number(direct(section,"NUMBER") || index);
+    const summary=direct(section,"SUMMARY");
+    const heading=plain(summary);
+    const items=[];
+    for(const ref of section.querySelectorAll("MODS > MOD")) {
+      const kind=direct(ref,"TYPE"), instance=direct(ref,"INSTANCE"), itemId=direct(ref,"ID");
+      if(!kind || !itemId) continue;
+      const original=models.get(kind+":"+instance);
+      const model=original ? copyNode(original) : null;
+      const type=kind==="assignment" ? "assign" : kind;
+      const title=plain(direct(model,"name")) || typeName(type);
+      const item={id:itemId,type,title,section:id,model,hidden:direct(ref,"VISIBLE")==="0"};
+      activities.set(item.id,item);
+      items.push(item);
+    }
+    return {id,number,title:heading && heading.length<=80 ? heading : sectionName(null,number),summary,format:"1",
+      hidden:direct(section,"VISIBLE")==="0",items};
+  });
+  return {archive,name,sectors,activities,records:new Map(),context:"",legacyId,legacyFiles,
+    title:direct(header,"FULLNAME") || name,summary:direct(header,"SUMMARY"),format:"1",bank:null};
+}
 async function openSelection(selection,isDraft) {
   if(!selection?.length) return;
   const id=++loadGeneration;
-  status(isDraft ? "Lendo os arquivos do rascunho…" : "Lendo o backup do Moodle…");
+  status(isDraft ? "Lendo os arquivos do rascunho…" : "Lendo o arquivo…");
   try {
-    const archive=isDraft ? draftArchive(selection) : await openArchive(selection[0]);
-    const name=isDraft ? selection[0].webkitRelativePath.split("/")[0] : selection[0].name;
-    const next=await readCourse(archive,name);
-    if(id!==loadGeneration) return;
-    course=next;
-    selected="";
-    openGroups.clear();
-    $("search").value="";
-    $("welcome").hidden=true;
-    $("workspace").hidden=false;
-    $("topActions").hidden=false;
-    $("courseTitle").textContent=course.title;
-    $("courseMeta").textContent=course.sectors.length+" tópicos · "+course.activities.size+" itens · "+name;
-    if(course.sectors.length) openGroups.add(course.sectors[0].id);
-    renderNav();
-    status("");
-    show("overview");
+    await presentInput(isDraft ? draftArchive(selection) : await openArchive(selection[0]),id);
   } catch(error) {
     if(id===loadGeneration) status(error.message || "O arquivo não pôde ser lido.",true);
   }
 }
+async function presentInput(input,id) {
+  if(id!==loadGeneration) return;
+  const {kind,archive,name}=input;
+  const next=kind==="course" ? await readCourse(archive,name) : kind==="legacy" ? await readLegacyCourse(archive,name) : null;
+  const manifest=kind==="scorm" ? await archive.xml("imsmanifest.xml",true) : null;
+  if(id!==loadGeneration) return;
+  ++detailGeneration;
+  activePlayer=null;
+  frameSources.clear();
+  course=next;
+  selected="";
+  openGroups.clear();
+  $("search").value="";
+  $("welcome").hidden=true;
+  $("workspace").hidden=false;
+  $("workspace").toggleAttribute("data-package",!course);
+  $("topActions").hidden=false;
+  status("");
+  if(course) {
+    $("courseTitle").textContent=course.title;
+    $("courseMeta").textContent=course.sectors.length+" tópicos · "+course.activities.size+" itens · "+
+      (kind==="legacy" ? "Moodle 1.x · " : "")+name;
+    if(course.sectors.length) openGroups.add(course.sectors[0].id);
+    renderNav();
+    show("overview");
+    return;
+  }
+  $("nav").replaceChildren();
+  $("courseMeta").textContent=name;
+  if(manifest) {
+    const org=[...manifest.getElementsByTagNameNS("*","organization")][0];
+    const title=[...org?.children || []].find(child=>child.localName==="title")?.textContent.trim() || name;
+    $("courseTitle").textContent=title;
+    const panel=makePanel("Teste do pacote","SCORM");
+    mountPlayer(panel,path=>archive.blob(path,48*1024*1024),manifestLaunches(manifest));
+  } else {
+    $("courseTitle").textContent="Escolha um backup do ZIP";
+    const panel=makePanel("Backups encontrados","Arquivo ZIP");
+    const list=element("div",null,"filelist");
+    for(const path of input.backups) list.append(button(path,async()=>{
+      const generation=++loadGeneration;
+      status("Lendo "+path+"…");
+      try {
+        const nested=await archive.blob(path);
+        await presentInput(await openArchive(nested,path.split("/").at(-1),input.depth+1),generation);
+      } catch(error) {
+        if(generation===loadGeneration) status(error.message,true);
+      }
+    }));
+    panel.append(list);
+  }
+}
 function renderNav() {
+  if(!course) return;
   const nav=$("nav");
   const query=fold($("search").value.trim());
   nav.replaceChildren();
@@ -676,7 +798,7 @@ function fileMime(filename,fallback="") {
     pdf:"application/pdf"}[ext] || fallback || "application/octet-stream";
 }
 async function poolFile(archive,file,limit=LIMIT) {
-  return archive.blob("files/"+file.hash.slice(0,2)+"/"+file.hash,limit);
+  return archive.blob(file.archivePath || "files/"+file.hash.slice(0,2)+"/"+file.hash,limit);
 }
 async function safeFragment(html,files=[],area="",item="") {
   const draft=document.createElement("template");
@@ -697,7 +819,8 @@ async function safeFragment(html,files=[],area="",item="") {
       const isAnchor=node.localName==="a" && attr==="href";
       const isMedia=(node.localName==="img" || node.localName==="video" || node.localName==="audio" ||
           node.localName==="source") && attr!=="href";
-      if(isAnchor && external(path)) {
+      const legacyName=course.legacyId ? legacyFilePath(path,course.legacyId) : "";
+      if(isAnchor && external(path) && !files.some(file=>file.path===legacyName)) {
         node.href=external(path);
         node.target="_blank";
         node.rel="noopener noreferrer";
@@ -706,8 +829,8 @@ async function safeFragment(html,files=[],area="",item="") {
       } else {
         node.removeAttribute(attr);
         const embedded=/^@@PLUGINFILE@@\/(.*)$/i.exec(path);
-        if(isMedia && embedded) {
-          const name=decodedPath(embedded[1].split(/[?#]/,1)[0]);
+        const name=embedded ? decodedPath(embedded[1].split(/[?#]/,1)[0]) : legacyName;
+        if(isMedia && name) {
           const candidates=files.filter(row=>row.path===name && allowMedia.test(fileMime(row.filename,row.mime)));
           const file=candidates.find(row=>(!area || row.area===area) && (!item || row.item===item)) || candidates[0];
           if(file) pending.push((async()=>{
@@ -779,6 +902,15 @@ function showFiles(panel,files) {
   }
   panel.append(list);
 }
+function legacyAttachments(data,files,courseId) {
+  const paths=new Set([legacyFilePath(direct(data,"reference"),courseId)]);
+  const draft=document.createElement("template");
+  for(const field of data.querySelectorAll("content,description,intro,summary,alltext,contents,message")) {
+    draft.innerHTML=field.textContent;
+    for(const link of draft.content.querySelectorAll("a[href]")) paths.add(legacyFilePath(link.getAttribute("href"),courseId));
+  }
+  return files.filter(file=>paths.has(file.path));
+}
 async function show(id) {
   if(!course) return;
   const generation=++detailGeneration;
@@ -796,7 +928,7 @@ async function show(id) {
     if(id==="overview" || section) {
       const panel=makePanel(section?.title || "Visão geral","Curso");
       await rich(panel,section ? section.summary : current.summary, section ? section.format : current.format,
-        current.records.get(current.context) || [],"summary",section?.id || "");
+        current.legacyFiles || current.records.get(current.context) || [],"summary",section?.id || "");
       if(generation!==detailGeneration) return;
       const list=element("div",null,"filelist");
       const entries=section ? section.items : current.sectors;
@@ -810,19 +942,25 @@ async function show(id) {
       const activity=current.activities.get(id);
       if(!activity) return;
       const panel=makePanel(activity.title,typeName(activity.type));
-      const [body,module]=await Promise.all([current.archive.xml(activity.dir+"/"+activity.type+".xml"),current.archive.xml(activity.dir+"/module.xml")]);
-      if(generation!==detailGeneration) return;
-      if(direct(module?.documentElement,"visible")==="0") note(panel,"Atividade oculta no backup.");
-      if(!body) { note(panel,"O backup registra este item, mas o arquivo da atividade não está incluído."); return; }
-      const root=body.documentElement;
-      const data=[...root.children].find(child=>child.localName===activity.type) || root;
-      const files=current.records.get(root.getAttribute("contextid")) || [];
-      const intro=direct(data,"intro") || direct(data,"description");
+      let data=activity.model, files=current.legacyFiles, hidden=activity.hidden;
+      if(!current.legacyFiles) {
+        const [body,module]=await Promise.all([current.archive.xml(activity.dir+"/"+activity.type+".xml"),current.archive.xml(activity.dir+"/module.xml")]);
+        if(generation!==detailGeneration) return;
+        hidden=direct(module?.documentElement,"visible")==="0";
+        const root=body?.documentElement;
+        data=root && ([...root.children].find(child=>child.localName===activity.type) || root);
+        files=current.records.get(root?.getAttribute("contextid")) || [];
+      }
+      if(hidden) note(panel,"Atividade oculta no backup.");
+      if(!data) { note(panel,"O backup registra este item, mas o arquivo da atividade não está incluído."); return; }
+      const intro=direct(data,"intro") || direct(data,"description") || (current.legacyFiles
+        ? direct(data,activity.type==="label" ? "content" : "summary") : "");
       await rich(panel,intro,direct(data,"introformat") || "1",files,"intro");
       if(generation!==detailGeneration) return;
       await previewActivity(panel,activity,data,files,current);
       if(generation!==detailGeneration) return;
-      const attachments=files.filter(file=>activity.type!=="scorm" || file.area==="package");
+      const attachments=current.legacyFiles ? legacyAttachments(data,files,current.legacyId) :
+        files.filter(file=>activity.type!=="scorm" || file.area==="package");
       showFiles(panel,attachments);
     }
   } catch(error) {
@@ -852,8 +990,20 @@ async function previewActivity(panel,activity,data,files,current) {
       panel.append(link, element("p",url,"meta"));
       break;
     }
+    case "resource": {
+      const article=direct(data,"alltext");
+      if(article) { await rich(panel,article,"1",files,"content"); break; }
+      const url=external(direct(data,"reference"));
+      if(url && !files.some(file=>file.path===legacyFilePath(url,current.legacyId))) {
+        const link=element("a","Abrir link externo","action");
+        link.href=url;
+        link.target="_blank";
+        link.rel="noopener noreferrer";
+        panel.append(link);
+      } else if(!files.length) note(panel,"O backup não inclui arquivos para este item.");
+      break;
+    }
     case "folder":
-    case "resource":
       if(!files.length) note(panel,"O backup não inclui arquivos para este item.");
       break;
     case "choice": {
@@ -1122,6 +1272,20 @@ async function createScormDocument(source,entry,asset,key) {
   doc.head.prepend(policy,bridge);
   return "<!doctype html>"+doc.documentElement.outerHTML;
 }
+function manifestLaunches(manifest) {
+  const resources=[...manifest.getElementsByTagNameNS("*","resource")].filter(node=>node.hasAttribute("href"));
+  const resourcePaths=new Map(resources.map(node=>[node.getAttribute("identifier"),node.getAttribute("href")]));
+  const seen=new Set();
+  const launches=[];
+  for(const item of manifest.getElementsByTagNameNS("*","item")) {
+    const path=resourcePaths.get(item.getAttribute("identifierref"));
+    if(!path || seen.has(path)) continue;
+    const title=[...item.children].find(node=>node.localName==="title")?.textContent.trim();
+    seen.add(path);
+    launches.push({path,title});
+  }
+  return launches.length ? launches : resources.map(node=>({path:node.getAttribute("href")}));
+}
 function configurePlayer(panel,data,files,current) {
   const scos=[...data.querySelectorAll("scoes > sco")].filter(sco=>direct(sco,"launch"));
   const stock=new Map(files.filter(file=>file.area==="content").map(file=>[file.path,file]));
@@ -1129,16 +1293,33 @@ function configurePlayer(panel,data,files,current) {
     files.find(file=>file.area==="package");
   numberLine(panel,"Nota máxima",direct(data,"maxgrade"));
   if(!stock.size && !pkg) { note(panel,"O conteúdo SCORM não está incluído no backup."); return; }
+  let zipped;
+  async function asset(path) {
+    if(stock.has(path)) return poolFile(current.archive,stock.get(path),48*1024*1024);
+    if(!pkg) return null;
+    if(!zipped) {
+      const packageBlob=await poolFile(current.archive,pkg);
+      if(!packageBlob) return null;
+      zipped=new Archive(await zipIndex(packageBlob));
+    }
+    return zipped.blob(path,48*1024*1024);
+  }
+  const launches=scos.map(sco=>({path:direct(sco,"launch"),title:direct(sco,"title")}));
+  const initial=direct(scos.find(sco=>recordId(sco)===direct(data,"launch")),"launch");
+  mountPlayer(panel,asset,launches,direct(data,"maxgrade"),initial);
+}
+function mountPlayer(panel,asset,launches,maximum="",initial="") {
   const controls=element("div",null,"actions");
   let choice;
-  if(scos.length>1) {
+  if(launches.length>1) {
     choice=element("select");
     choice.setAttribute("aria-label","Escolher tela SCORM");
-    for(const [index,sco] of scos.entries()) {
-      const option=element("option",direct(sco,"title") || "Tela "+(index+1));
-      option.value=direct(sco,"launch");
+    for(const [index,launch] of launches.entries()) {
+      const option=element("option",launch.title || "Tela "+(index+1));
+      option.value=launch.path;
       choice.append(option);
     }
+    if(launches.some(launch=>launch.path===initial)) choice.value=initial;
     controls.append(choice);
   }
   const feedback=element("p","Pontuação e progresso do teste ficam nesta página.","notice");
@@ -1149,23 +1330,12 @@ function configurePlayer(panel,data,files,current) {
     holder.replaceChildren();
     feedback.textContent="Carregando o pacote…";
     try {
-      let zipped;
-      async function asset(path) {
-        if(stock.has(path)) return poolFile(current.archive,stock.get(path),48*1024*1024);
-        if(!pkg) return null;
-        if(!zipped) {
-          const packageBlob=await poolFile(current.archive,pkg);
-          if(!packageBlob) return null;
-          zipped=new Archive(await zipIndex(packageBlob));
-        }
-        return zipped.blob(path,48*1024*1024);
-      }
-      let launch=choice?.value || direct(scos.find(sco=>recordId(sco)===direct(data,"launch")), "launch") || direct(scos[0],"launch");
+      let launch=choice?.value || initial || launches[0]?.path;
       if(!launch) {
         const manifest=await asset("imsmanifest.xml");
         if(manifest) {
           const doc=new DOMParser().parseFromString(await manifest.text(),"application/xml");
-          launch=[...doc.getElementsByTagNameNS("*","resource")].find(node=>node.hasAttribute("href"))?.getAttribute("href");
+          launch=manifestLaunches(doc)[0]?.path;
         }
       }
       const entry=safePath(decodedPath((launch || "index.html").split(/[?#]/,1)[0]));
@@ -1178,7 +1348,7 @@ function configurePlayer(panel,data,files,current) {
       frame.title="Teste do pacote SCORM";
       frame.setAttribute("sandbox","allow-scripts");
       frame.srcdoc=srcdoc;
-      activePlayer={frame,feedback,key,maximum:direct(data,"maxgrade")};
+      activePlayer={frame,feedback,key,maximum};
       holder.replaceChildren(frame);
       feedback.textContent="Teste do pacote aberto nesta página.";
       open.textContent="Reiniciar SCORM";
