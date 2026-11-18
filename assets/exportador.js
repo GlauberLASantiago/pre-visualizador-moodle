@@ -826,6 +826,7 @@ details:not([open]) iframe{display:none}`;
 
   const names={pdf:"PDF",docx:"DOCX",epub:"EPUB",zip:"Site do curso em ZIP"};
   let running=false;
+  let downloadUrl="";
   const outputStatus=$("exportStatus");
   const exportButton=$("exportCourse");
   function exportStatus(message,error=false) {
@@ -833,13 +834,17 @@ details:not([open]) iframe{display:none}`;
     outputStatus.textContent=message;
     outputStatus.toggleAttribute("data-error",error);
   }
-  function download(blob,name) {
-    const url=URL.createObjectURL(blob);
-    const anchor=element("a");
-    anchor.href=url;
+  function clearDownload() {
+    if(downloadUrl) URL.revokeObjectURL(downloadUrl);
+    downloadUrl="";
+  }
+  function offerDownload(blob,name,format,notice) {
+    exportStatus(name+" está pronto para baixar."+notice+" ");
+    downloadUrl=URL.createObjectURL(blob);
+    const anchor=element("a","Baixar "+format.toUpperCase());
+    anchor.href=downloadUrl;
     anchor.download=name;
-    anchor.click();
-    setTimeout(()=>URL.revokeObjectURL(url),30000);
+    outputStatus.append(anchor);
   }
   exportButton.addEventListener("click",async()=>{
     const source=course;
@@ -847,11 +852,13 @@ details:not([open]) iframe{display:none}`;
     const format=$("exportFormat").value;
     if(!Object.hasOwn(names,format)) return;
     running=true;
+    clearDownload();
     exportButton.disabled=true;
     $("exportFormat").disabled=true;
     let zip=null;
     try {
       const filename=slug(source.title)+(format==="zip"?"-site":"")+"."+format;
+      let savedName=filename;
       if(format==="zip") {
         let writer=null;
         if(typeof window.showSaveFilePicker==="function") {
@@ -859,9 +866,13 @@ details:not([open]) iframe{display:none}`;
             const file=await window.showSaveFilePicker({suggestedName:filename,types:[{
               description:"Site do curso em ZIP",accept:{"application/zip":[".zip"]}}]});
             writer=await file.createWritable();
+            savedName=file.name;
           } catch(error) {
-            if(error.name==="AbortError") return;
-            if(error.name!=="SecurityError") throw error;
+            if(error.name==="AbortError") {
+              exportStatus("Salvamento cancelado.");
+              return;
+            }
+            if(!["SecurityError","NotAllowedError"].includes(error.name)) throw error;
           }
         }
         zip=new StoredZip(writer);
@@ -870,9 +881,9 @@ details:not([open]) iframe{display:none}`;
       const book=await collect(source,format==="zip",exportStatus);
       const result=format==="zip" ? await siteZip(book,zip,exportStatus) :
         await ({pdf,docx,epub})[format](book,exportStatus);
-      if(result.blob) download(result.blob,filename);
-      const omissions=result.missing ? " · "+result.missing+" arquivo(s) ou imagem(ns) indisponível(is)" : "";
-      exportStatus(names[format]+" exportado"+omissions+".");
+      const notice=result.missing ? " Arquivos ou imagens indisponíveis: "+result.missing+"." : "";
+      if(result.blob) offerDownload(result.blob,filename,format,notice);
+      else exportStatus(savedName+" foi salvo na pasta que você escolheu."+notice);
     } catch(error) {
       if(zip) await zip.abort();
       exportStatus(error.message || "Não foi possível exportar o curso.",true);
